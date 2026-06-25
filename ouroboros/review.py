@@ -36,7 +36,9 @@ MAX_FUNCTION_LINES = 300
 # v6.46.0: GAIA-forensic hardening added reviewed single-purpose helpers (fail_tasks,
 # _deliverables_root, _resolve_or_provider, the generative context-window probe, the
 # GAIA adapter knobs); bump with small headroom so the release's tests do not re-churn.
-MAX_TOTAL_FUNCTIONS = 3524
+# v6.46.2: pre-flight boot checks (check_runtime_mode, check_git_identity,
+# check_python_path) added to agent_startup_checks.py for ibl-6f27eca37ea2.
+MAX_TOTAL_FUNCTIONS = 3527
 GRANDFATHERED_OVERSIZED_FUNCTIONS = {
     ("agent_startup_checks.py", "verify_restart"),  # managed #53 boot diagnostic flow, 307 lines
     ("git.py", "_run_reviewed_stage_cycle"),  # reviewed-commit gate orchestration, 302 lines

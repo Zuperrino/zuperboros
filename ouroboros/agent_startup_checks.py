@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from typing import Any, Dict, Tuple
@@ -277,6 +278,84 @@ def check_extension_health(env: Any) -> Tuple[Dict[str, Any], int]:
     return {"status": "ok"}, 0
 
 
+def check_runtime_mode(env: Any) -> Tuple[dict, int]:
+    """Report the current runtime mode (informational, not a conditional warning).
+
+    At boot there is no signal for whether protected-path edits will be needed,
+    so a warning on ``advanced`` would be noise. The value is recorded for
+    observability — evolution task prompts can read the last startup_verification
+    event to pre-flight against known blockers.
+    """
+    try:
+        from ouroboros.config import get_runtime_mode
+        mode = get_runtime_mode()
+        return {"status": "ok", "mode": mode}, 0
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 0
+
+
+def check_git_identity(env: Any) -> Tuple[dict, int]:
+    """Check that git user.name and user.email are configured.
+
+    Missing identity causes ``Author identity unknown`` GIT_ERROR during
+    commit_reviewed — a hard blocker discovered mid-task in evolution cycle #1.
+    Surfacing it at boot lets the agent fix it before starting edits.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get-regexp", r"^(user\.name|user\.email)$"],
+            cwd=str(env.repo_dir),
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        name = ""
+        email = ""
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                key, value = parts
+                if key == "user.name":
+                    name = value
+                elif key == "user.email":
+                    email = value
+        identity_ok = bool(name and email)
+        data: Dict[str, Any] = {
+            "status": "ok" if identity_ok else "warning",
+            "name": name or "(not set)",
+            "email": email or "(not set)",
+        }
+        if not identity_ok:
+            data["message"] = "git user.name or user.email missing — commit_reviewed will fail"
+            log.warning("Git identity incomplete: name=%r email=%r", name, email)
+        return data, 0 if identity_ok else 1
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 0
+
+
+def check_python_path(env: Any) -> Tuple[dict, int]:
+    """Check availability of python3 and python in PATH.
+
+    Cycle #1 lost rounds calling ``python`` when only ``python3`` existed.
+    Uses ``shutil.which`` (stdlib, cross-platform, zero subprocess).
+    """
+    try:
+        python3 = shutil.which("python3")
+        python_bin = shutil.which("python")
+        data: Dict[str, Any] = {
+            "status": "ok",
+            "python3": python3 or "(not found)",
+            "python": python_bin or "(not found)",
+        }
+        if not python3:
+            data["status"] = "warning"
+            data["message"] = "python3 not found in PATH — scripts must use an explicit interpreter"
+            return data, 1
+        if not python_bin:
+            data["python_alias_missing"] = True
+        return data, 0
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 0
+
+
 def verify_system_state(env: Any, git_sha: str) -> None:
     """Bible Principle 1: verify system state on every startup."""
     checks: Dict[str, Any] = {}
@@ -319,6 +398,15 @@ def verify_system_state(env: Any, git_sha: str) -> None:
     checks["model"] = {"configured": configured_model or "(not set)"}
     if not configured_model:
         issues += 1
+
+    checks["runtime_mode"], issue_count = check_runtime_mode(env)
+    issues += issue_count
+
+    checks["git_identity"], issue_count = check_git_identity(env)
+    issues += issue_count
+
+    checks["python_path"], issue_count = check_python_path(env)
+    issues += issue_count
 
     checks["extension_health"], issue_count = check_extension_health(env)
     issues += issue_count

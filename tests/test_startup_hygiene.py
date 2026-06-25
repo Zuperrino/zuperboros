@@ -418,3 +418,81 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
     assert calls == [["git", "status", "--porcelain"]]
+
+
+# --- pre-flight environment checks (ibl-6f27eca37ea2) -----------------------
+
+def test_check_runtime_mode_reports_mode(tmp_path, monkeypatch):
+    """check_runtime_mode returns the configured mode (informational, no warning)."""
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "advanced")
+    result, issues = startup_mod.check_runtime_mode(env)
+    assert result["status"] == "ok"
+    assert result["mode"] == "advanced"
+    assert issues == 0
+
+
+def test_check_git_identity_detects_missing_identity(tmp_path, monkeypatch):
+    """Missing user.name/user.email must surface as a warning at boot."""
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(startup_mod.subprocess, "run", fake_run)
+    result, issues = startup_mod.check_git_identity(env)
+    assert result["status"] == "warning"
+    assert issues == 1
+    assert "missing" in result["message"]
+
+
+def test_check_git_identity_reports_configured_identity(tmp_path, monkeypatch):
+    """Configured identity returns ok with name and email."""
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="user.name Test User\nuser.email test@example.com\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(startup_mod.subprocess, "run", fake_run)
+    result, issues = startup_mod.check_git_identity(env)
+    assert result["status"] == "ok"
+    assert result["name"] == "Test User"
+    assert result["email"] == "test@example.com"
+    assert issues == 0
+
+
+def test_check_python_path_detects_python3_and_python(tmp_path, monkeypatch):
+    """Both python3 and python in PATH returns ok."""
+    monkeypatch.setattr(startup_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+    result, issues = startup_mod.check_python_path(env)
+    assert result["status"] == "ok"
+    assert result["python3"] == "/usr/bin/python3"
+    assert result["python"] == "/usr/bin/python"
+    assert issues == 0
+
+
+def test_check_python_path_warns_when_python3_missing(tmp_path, monkeypatch):
+    """Missing python3 is a warning — scripts need an explicit interpreter."""
+    monkeypatch.setattr(startup_mod.shutil, "which", lambda name: None)
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+    result, issues = startup_mod.check_python_path(env)
+    assert result["status"] == "warning"
+    assert issues == 1
+    assert "python3 not found" in result["message"]
+
+
+def test_check_python_path_notes_missing_python_alias(tmp_path, monkeypatch):
+    """python3 present but python alias missing is ok with a note."""
+    def fake_which(name):
+        return "/usr/bin/python3" if name == "python3" else None
+    monkeypatch.setattr(startup_mod.shutil, "which", fake_which)
+    env = types.SimpleNamespace(repo_dir=tmp_path)
+    result, issues = startup_mod.check_python_path(env)
+    assert result["status"] == "ok"
+    assert result["python_alias_missing"] is True
+    assert issues == 0
