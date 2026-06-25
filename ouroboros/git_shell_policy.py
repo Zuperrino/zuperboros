@@ -25,7 +25,12 @@ GIT_READONLY_SUBCOMMANDS = frozenset([
 # external workspaces, where local git is otherwise unrestricted).
 GIT_NETWORK_SUBCOMMANDS = frozenset([
     "clone", "fetch", "pull", "push", "ls-remote", "submodule",
-    "remote", "archive", "lfs",
+    "archive", "lfs",
+])
+# ``git remote`` subcommands that mutate configuration.
+GIT_REMOTE_MUTATING_SUBCOMMANDS = frozenset([
+    "add", "remove", "rm", "rename", "set-url", "set-head",
+    "prune", "update",
 ])
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
 _BRANCH_MUTATING_FLAGS = frozenset({
@@ -137,6 +142,38 @@ def _git_tag_readonly(args: list[str]) -> bool:
     return read_hint or not positionals
 
 
+def _git_remote_readonly(args: list[str], *, allow_network: bool = True) -> bool:
+    """Classify ``git remote`` invocations as read-only or mutating.
+
+    Allowed (local, no network):
+      - ``git remote`` (bare list)
+      - ``git remote -v`` / ``git remote --verbose``
+      - ``git remote get-url <name>``
+      - ``git remote show`` (bare)
+
+    Allowed only when ``allow_network`` is True (contacts remote hosts):
+      - ``git remote show <name>``
+
+    Always blocked:
+      - ``git remote add/remove/rename/set-url/prune/update``
+    """
+    if not args:
+        return True
+    first = args[0]
+    if first in GIT_REMOTE_MUTATING_SUBCOMMANDS:
+        return False
+    if first in ("-v", "--verbose"):
+        return True
+    if first == "get-url":
+        return True
+    if first == "show":
+        # ``git remote show`` (no name) is local; ``git remote show <name>``
+        # contacts the remote and is therefore network-gated.
+        return len(args) == 1 or allow_network
+    # Unknown subcommand — fail closed.
+    return False
+
+
 def _git_invocation_block_reason(parts: list[str], *, allow_network: bool = True) -> str:
     subcmd, args = _git_subcommand_and_args(parts)
     if not subcmd or subcmd in GIT_READONLY_SUBCOMMANDS:
@@ -145,6 +182,12 @@ def _git_invocation_block_reason(parts: list[str], *, allow_network: bool = True
         return ""
     if subcmd == "tag" and _git_tag_readonly(args):
         return ""
+    if subcmd == "remote":
+        if _git_remote_readonly(args, allow_network=allow_network):
+            return ""
+        if not allow_network and args and args[0] == "show" and len(args) > 1:
+            return "task_contract.allowed_resources.network=false blocks git remote show <name>"
+        return f"git {subcmd}"
     if subcmd == "ls-remote":
         return "" if allow_network else "task_contract.allowed_resources.network=false blocks git ls-remote"
     return f"git {subcmd}"
@@ -332,9 +375,11 @@ def external_workspace_git_violation(
             if _protected_label(candidate):
                 return "git invocation targets the Ouroboros runtime"
         if not allow_network:
-            subcmd, _ = _git_subcommand_and_args(invocation)
+            subcmd, sub_args = _git_subcommand_and_args(invocation)
             if subcmd in GIT_NETWORK_SUBCOMMANDS:
                 return f"task_contract.allowed_resources.network=false blocks git {subcmd}"
+            if subcmd == "remote" and sub_args and sub_args[0] == "show" and len(sub_args) > 1:
+                return "task_contract.allowed_resources.network=false blocks git remote show <name>"
     return ""
 
 

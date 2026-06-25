@@ -72,3 +72,48 @@ def test_legitimate_workspace_git_is_allowed(cmd):
 
 def test_clone_allowed_when_network_enabled():
     assert not _violation("git clone https://example.com/x.git", allow_network=True)
+
+
+# --- git remote read-only classifier (ibl-58871470f4ec) -------------------
+
+REMOTE_READONLY_CASES = [
+    pytest.param("git remote", id="remote_bare"),
+    pytest.param("git remote -v", id="remote_verbose_short"),
+    pytest.param("git remote --verbose", id="remote_verbose_long"),
+    pytest.param("git remote get-url origin", id="remote_get_url"),
+    pytest.param("git remote show", id="remote_show_bare"),
+]
+
+REMOTE_NETWORK_CASES = [
+    pytest.param("git remote show origin", id="remote_show_named"),
+]
+
+REMOTE_MUTATING_CASES = [
+    pytest.param("git remote add origin https://example.com/x.git", id="remote_add"),
+    pytest.param("git remote remove origin", id="remote_remove"),
+    pytest.param("git remote rm origin", id="remote_rm"),
+    pytest.param("git remote rename origin upstream", id="remote_rename"),
+    pytest.param("git remote set-url origin https://example.com/x.git", id="remote_set_url"),
+    pytest.param("git remote prune origin", id="remote_prune"),
+    pytest.param("git remote update", id="remote_update"),
+]
+
+
+@pytest.mark.parametrize("cmd", REMOTE_READONLY_CASES)
+def test_git_remote_readonly_allowed(cmd):
+    """Local read-only ``git remote`` forms must not be blocked."""
+    reason = policy.run_shell_git_block_reason(cmd)
+    assert reason == "", f"expected ALLOW for: {cmd!r}, got: {reason!r}"
+
+
+@pytest.mark.parametrize("cmd", REMOTE_NETWORK_CASES)
+def test_git_remote_show_named_network_gated(cmd):
+    """``git remote show <name>`` contacts the remote — network-gated."""
+    assert policy.run_shell_git_block_reason(cmd, allow_network=False)
+    assert policy.run_shell_git_block_reason(cmd, allow_network=True) == ""
+
+
+@pytest.mark.parametrize("cmd", REMOTE_MUTATING_CASES)
+def test_git_remote_mutating_blocked(cmd):
+    """Mutating ``git remote`` subcommands must always be blocked."""
+    assert policy.run_shell_git_block_reason(cmd), f"expected BLOCK for: {cmd!r}"
